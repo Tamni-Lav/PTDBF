@@ -1,5 +1,5 @@
 """
-PDG.py - Visualización de señales de entrada en tiempo real.
+PDG.py - Visualizacion de señales de entrada
 """
 
 import numpy as np
@@ -10,16 +10,8 @@ import time
 import os
 from scipy.io.wavfile import write
 
-
 class MicrophoneArrayRealtime:
-    """Sistema de visualización en tiempo real para array de micrófonos."""
-    
     def __init__(self, gestion_audio):
-        """Inicializa el sistema de visualización.
-        
-        Args:
-            gestion_audio: Gestor central de audio
-        """
         self.gestion_audio = gestion_audio
         self.sample_rate = 16000
         self.channels = 4
@@ -29,7 +21,7 @@ class MicrophoneArrayRealtime:
         self.full_audio_buffer = []
         self.running = True
         
-        # Configuración de gráficos
+        # Configuracion de graficos
         self.fig = None
         self.axs = None
         self.lines = []
@@ -38,21 +30,17 @@ class MicrophoneArrayRealtime:
         
         self.amplification_factor = 15.0
         
-        # Configuración de guardado
+        # Configuracion de guardado
         self.output_folder = r"C:\Users\leona\Desktop\TLTech\PFJdN\Audios_Crudos"
         os.makedirs(self.output_folder, exist_ok=True)
         
         # Registrarse para recibir audio
         self.gestion_audio.agregar_suscriptor(self.recibir_audio)
         
-        print(f"PDG inicializado - Amplificación: {self.amplification_factor}x")
+        print(f"PDG inicializado - Amplificacion: {self.amplification_factor}x")
 
     def recibir_audio(self, audio_data):
-        """Callback que recibe audio del gestor central.
-        
-        Args:
-            audio_data: Datos de audio con shape (frames, channels)
-        """
+        """Callback que recibe audio del gestor central"""
         if self.running and audio_data is not None:
             amplified_data = audio_data[:, 1:5].copy()
             
@@ -63,20 +51,17 @@ class MicrophoneArrayRealtime:
             self.full_audio_buffer.append(audio_data[:, 1:5].copy())
 
     def setup_graficos(self):
-        """Configura los gráficos para los 4 micrófonos."""
+        """Configuracion de graficos - Microfonos 1,2,3,4"""
         self.fig, self.axs = plt.subplots(4, 1, figsize=(14, 10))
-        self.fig.suptitle(
-            f'Señales de Entrada - Micrófonos 1,2,3,4', 
-            fontsize=14, 
-            fontweight='bold'
-        )
+        self.fig.suptitle(f'Señales de Entrada - Microfonos 1,2,3,4', 
+                         fontsize=14, fontweight='bold')
         
         colores = ['blue', 'red', 'green', 'orange']
         
-        # Configurar los 4 micrófonos
+        # Configurar los 4 microfonos
         for i in range(4):
             mic_numero = i + 1
-            self.axs[i].set_title(f"Micrófono {mic_numero}", fontweight='bold', fontsize=11)
+            self.axs[i].set_title(f"Microfono {mic_numero}", fontweight='bold', fontsize=11)
             self.axs[i].set_ylabel('Amplitud', fontsize=9)
             
             self.axs[i].set_ylim(-1.0, 1.0)
@@ -104,11 +89,7 @@ class MicrophoneArrayRealtime:
         plt.tight_layout()
 
     def update_plot(self, frame):
-        """Actualiza gráficos en tiempo real.
-        
-        Returns:
-            list: Lista de líneas actualizadas
-        """
+        """Actualiza graficos en tiempo real"""
         if not self.running or len(self.audio_buffer) == 0:
             return self.lines
 
@@ -119,24 +100,21 @@ class MicrophoneArrayRealtime:
                 if len(all_data) > self.window_samples:
                     all_data = all_data[-self.window_samples:]
                 
-                current_time = np.linspace(
-                    max(0, self.window_duration - len(all_data)/self.sample_rate), 
-                    self.window_duration, 
-                    len(all_data)
-                )
+                current_time = np.linspace(max(0, self.window_duration - len(all_data)/self.sample_rate), 
+                                         self.window_duration, len(all_data))
                 
-                # Actualizar micrófonos 1,2,3,4
+                # Actualizar microfonos 1,2,3,4
                 for i in range(4):
                     if all_data.shape[1] > i:
                         self.lines[i].set_data(current_time, all_data[:, i])
                     
         except Exception as e:
-            print(f"Error actualizando gráficos PDG: {e}")
+            print(f"Error actualizando graficos PDG: {e}")
 
         return self.lines
 
     def guardar_audio_completo(self, event=None):
-        """Guarda el audio completo de los micrófonos en archivos WAV."""
+        """Guarda el audio completo de los microfonos 1,2,3,4"""
         print("\nGuardando audio desde PDG...")
         
         if len(self.full_audio_buffer) == 0:
@@ -149,7 +127,7 @@ class MicrophoneArrayRealtime:
 
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             
-            # Guardar micrófonos individuales
+            # Guardar microfonos individuales
             for i in range(4):
                 mic_numero = i + 1
                 filepath = os.path.join(self.output_folder, f"mic_{mic_numero}_{timestamp}.wav")
@@ -157,22 +135,19 @@ class MicrophoneArrayRealtime:
                 print(f"Guardado: {filepath}")
 
             # Guardar todos los canales
-            all_channels_path = os.path.join(
-                self.output_folder, 
-                f"todos_canales_{timestamp}.wav"
-            )
+            all_channels_path = os.path.join(self.output_folder, f"todos_canales_{timestamp}.wav")
             write(all_channels_path, self.sample_rate, audio_int16)
             print(f"Guardado multicanales: {all_channels_path}")
 
             duracion_total = len(audio_data) / self.sample_rate
-            print(f"Duración TOTAL: {duracion_total:.2f} segundos")
-            print(f"Amplificación aplicada: {self.amplification_factor}x")
+            print(f"Duracion TOTAL: {duracion_total:.2f} segundos")
+            print(f"Amplificacion aplicada: {self.amplification_factor}x")
             
         except Exception as e:
             print(f"Error guardando audio PDG: {e}")
 
     def detener_visualizacion(self, event=None):
-        """Detiene la visualización y cierra los gráficos."""
+        """Detiene la visualizacion"""
         print("\nCerrando PDG...")
         self.running = False
         if self.fig:
