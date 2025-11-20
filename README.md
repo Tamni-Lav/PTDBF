@@ -80,11 +80,19 @@ Guardado de Audio
 ## 📁 Estructura de Archivos
    /
    ├── SistemaIntegrado.py    # Punto de entrada principal
+   
    ├── GestionDispositivos.py # Gestión de audio
+   
    ├── PDG.py                # Visualización de señales
+   
    ├── DOA.py                # Dirección de llegada
+   
    ├── Beamforming.py        # Beamforming y espectrogramas
+   
    ├── requirements.txt      # Dependencias
+   
    └── Audios_Guardados/     # Carpeta de salida de audio
+   
       ├── Audios_Crudos/    # Señales originales
+      
       └── Audios_Beamformed/ # Señales procesadas
