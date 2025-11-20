@@ -1,5 +1,6 @@
 """
-GESTION_DISPOSITIVOS.py - Gestion unificada del stream de audioasdas
+GESTION_DISPOSITIVOS.py - Gestion unificada del stream de audio
+vcaa
 """
 
 import sounddevice as sd

@@ -1,5 +1,6 @@
 """
 PDG.py - Visualizacion de señales de entrada
+vcaa
 """
 
 import numpy as np
