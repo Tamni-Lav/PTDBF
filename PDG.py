@@ -1,6 +1,6 @@
 """
 PDG.py - Visualizacion de señales de entrada
-vcaa
+vcaa - SIN WARNING DE TIGHT_LAYOUT
 """
 
 import numpy as np
@@ -87,7 +87,8 @@ class MicrophoneArrayRealtime:
         self.button_parar = Button(button_parar_ax, "Cerrar", color='lightcoral')
         self.button_parar.on_clicked(self.detener_visualizacion)
 
-        plt.tight_layout()
+        # ✅ CORRECCIÓN: Usar adjust en lugar de tight_layout
+        plt.subplots_adjust(left=0.08, right=0.95, top=0.93, bottom=0.08, hspace=0.4)
 
     def update_plot(self, frame):
         """Actualiza graficos en tiempo real"""

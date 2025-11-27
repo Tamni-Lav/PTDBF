@@ -1,10 +1,9 @@
 """
-Beamforming.py - Sistema de beamforming con visualización completa.
-CON FILTRO IIR Y 4 GRÁFICAS - CANAL 0 vs BEAMFORMED (AMPLIFICADO 30x)
+Beamforming.py - Versión OPTIMIZADA para DOA ULTRA ESTABLE
+CORREGIDO: Sin petardeos - Optimizado para ángulos estables
 """
 
 import numpy as np
-import threading
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import matplotlib.gridspec as gridspec
@@ -15,117 +14,113 @@ import time
 
 
 class BeamformingSystem:
-    """Sistema de beamforming con visualización completa de señales."""
-    
     def __init__(self, gestion_audio, doa_system):
-        """Inicializa el sistema de beamforming.
-        
-        Args:
-            gestion_audio: Gestor central de audio
-            doa_system: Sistema DOA para obtener dirección
-        """
         self.gestion_audio = gestion_audio
         self.doa = doa_system
         
-        # Configuración de audio
+        # Configuración
         self.sample_rate = 16000
         self.blocksize = 1024
         
-        # Configuración del array
+        # Array configuration
         self.radio = 0.0325
         self.mic_positions = np.array([
-            [-self.radio, 0],    # Micrófono 1
-            [0, -self.radio],    # Micrófono 2  
-            [self.radio, 0],     # Micrófono 3
-            [0, self.radio]      # Micrófono 4
+            [0, -self.radio],    # Mic 1 - Canal 2
+            [self.radio, 0],    # Mic 2 - Canal 3  
+            [0, self.radio],     # Mic 3 - Canal 4
+            [-self.radio, 0]      # Mic 4 - Canal 5
         ])
-        
         self.sound_speed = 343.0
         
-        # Estado del sistema
+        # Estado
         self.is_active = False
         self.is_processing = False
         self.current_angle = 0
         
-        # Buffers para visualización (5 segundos)
+        # ✅ OPTIMIZADO PARA DOA ESTABLE - MENOS SUAVIZADO NECESARIO
+        self.angle_confidence = 0.0
+        self.consecutive_stable_frames = 0
+        
+        # ✅ GANANCIAS OPTIMIZADAS - MÁS CONSERVADORAS
+        self.ganancia_base = 1.8  # Ajustado para DOA estable
+        self.ganancia_visual = 2.2
+        self.umbral_compresor = 0.18
+        self.ratio_compresion = 2.2
+        
+        # Buffers
         self.buffer_duration = 5
         self.buffer_size = self.buffer_duration * self.sample_rate
-        
-        # Buffers para CANAL 0 y Beamformed
         self.canal0_buffer = np.zeros(self.buffer_size)
         self.beamformed_buffer = np.zeros(self.buffer_size)
+        self.beamformed_filtrado_buffer = np.zeros(self.buffer_size)
+        
+        # Audio para guardar
         self.full_beamformed_audio = []
+        self.buffer_count = 0
         
-        # Configuración de filtro IIR
-        self.filtro_iir_b, self.filtro_iir_a = self._diseñar_filtro_iir()
-        print(f"Filtro IIR diseñado - Orden: {len(self.filtro_iir_b)-1}")
-        
-        # Estado del filtro
-        self.filtro_zi = None
-        
-        # Configuración de guardado
+        # Configuración
         self.output_folder = r"C:\Users\leona\Desktop\TLTech\PFJdN\Audios_Beamformed"
         os.makedirs(self.output_folder, exist_ok=True)
         
-        # Pre-cálculos
-        self.delays_precalculated = self._precalculate_all_delays()
+        # Pre-cálculos OPTIMIZADOS
+        self.delays_precalculated = self._precalculate_all_delays_con_fracciones()
+        
+        # ✅ FILTRO PASABANDA 50Hz - 7000Hz (Orden 5)
+        self.filtro_pasabanda_b, self.filtro_pasabanda_a = self._crear_filtro_pasabanda()
         
         # Visualización
         self.fig = None
-        self.ax_temporal = None
-        self.ax_espectral = None
-        self.ax_canal0_spec = None
-        self.ax_beam_spec = None
-        self.ax_info = None
+        self.axes = None
+        self.lineas_temporales = [None, None, None]
+        self.imagenes_espectrograma = [None, None, None]
+        self.lineas_espectro = [None, None, None]
         
-        self.canal0_time_line = None
-        self.beam_time_line = None
-        self.canal0_freq_line = None
-        self.beam_freq_line = None
-        self.canal0_spec_image = None
-        self.beam_spec_image = None
-        self.angle_text = None
+        # BOTÓN
+        self.btn_guardar = None
         
-        # Registrarse para recibir audio
+        # Estado del compresor
+        self.compression_state = 1.0
+        
+        # Registro
         self.gestion_audio.agregar_suscriptor(self.recibir_audio)
         
-        print("Beamforming inicializado - CANAL 0 vs BEAMFORMED (AMPLIFICADO 30x)")
-        print(f" - Comparación: Canal 0 vs Señal Beamformed")
-        print(f" - Amplificación Beamformed: 30x en ambos dominios")
-        print(f" - Duración visualización: {self.buffer_duration} segundos")
+        print("✅ BEAMFORMING OPTIMIZADO PARA DOA ULTRA ESTABLE")
+        print("   - Filtro: 50Hz - 7000Hz (orden 5)")
+        print("   - Adaptado a ángulos enteros estables")
+        print("   - Ganancia adaptativa por confianza DOA")
 
-    def _diseñar_filtro_iir(self):
-        """Diseña filtro IIR Butterworth pasa-banda para voz."""
-        orden = 4
-        lowcut = 300
-        highcut = 3400
-        
-        b, a = signal.butter(
-            N=orden,
-            Wn=[lowcut, highcut],
-            btype='band',
-            fs=self.sample_rate,
-            analog=False
-        )
-        
-        return b, a
-
-    def _aplicar_filtro_iir(self, señal, usar_filtfilt=True):
-        """Aplica filtro IIR a la señal."""
-        if usar_filtfilt:
-            return signal.filtfilt(self.filtro_iir_b, self.filtro_iir_a, señal)
-        else:
-            if self.filtro_zi is None:
-                self.filtro_zi = signal.lfilter_zi(self.filtro_iir_b, self.filtro_iir_a)
+    def _crear_filtro_pasabanda(self):
+        """Crea filtro pasabanda IIR de 50Hz a 7000Hz, orden 5"""
+        try:
+            nyquist = self.sample_rate / 2.0
+            low_freq = 50.0 / nyquist
+            high_freq = 7000.0 / nyquist
             
-            señal_filtrada, self.filtro_zi = signal.lfilter(
-                self.filtro_iir_b, self.filtro_iir_a, señal, zi=self.filtro_zi
-            )
-            return señal_filtrada
+            if low_freq <= 0 or high_freq >= 1 or low_freq >= high_freq:
+                low_freq = 50.0 / nyquist
+                high_freq = 7000.0 / nyquist
+            
+            b, a = signal.butter(5, [low_freq, high_freq], btype='band', analog=False)
+            print(f"✅ Filtro pasabanda creado: 50Hz - 7000Hz, orden 5")
+            return b, a
+            
+        except Exception as e:
+            print(f"❌ Error creando filtro pasabanda: {e}")
+            return [1.0], [1.0]
 
-    def _precalculate_all_delays(self):
-        """Pre-calcula todos los delays para 360 grados."""
-        delays = np.zeros((360, 4))
+    def aplicar_filtro_pasabanda(self, señal):
+        """Aplica el filtro pasabanda 50Hz-7000Hz"""
+        try:
+            if len(self.filtro_pasabanda_b) == 1 and self.filtro_pasabanda_b[0] == 1.0:
+                return señal
+            return signal.filtfilt(self.filtro_pasabanda_b, self.filtro_pasabanda_a, señal)
+        except Exception as e:
+            print(f"⚠️ Error aplicando filtro pasabanda: {e}")
+            return señal
+
+    def _precalculate_all_delays_con_fracciones(self):
+        """Precalcula delays con parte fraccionaria"""
+        delays = np.zeros((360, 4, 2))
         
         for angle_deg in range(360):
             angle_rad = np.deg2rad(angle_deg)
@@ -133,324 +128,368 @@ class BeamformingSystem:
             
             for mic in range(4):
                 distance = np.dot(self.mic_positions[mic], direction)
-                delays[angle_deg, mic] = -distance / self.sound_speed
+                delay_seconds = distance / self.sound_speed
+                delay_samples = delay_seconds * self.sample_rate
+                
+                delays[angle_deg, mic, 0] = int(np.floor(delay_samples))
+                delays[angle_deg, mic, 1] = delay_samples - delays[angle_deg, mic, 0]
             
-            delays[angle_deg] -= np.min(delays[angle_deg])
+            min_delay = np.min(delays[angle_deg, :, 0])
+            delays[angle_deg, :, 0] -= min_delay
             
         return delays
 
-    def calculate_delays(self, angle_deg):
-        """Obtiene delays pre-calculados para un ángulo específico."""
-        angle_idx = int(round(angle_deg)) % 360
-        return self.delays_precalculated[angle_idx].copy()
-
-    def apply_beamforming(self, audio_data, angle_deg):
-        """Aplica beamforming con ventaneo y filtrado IIR."""
-        # VENTANEO para mejorar calidad del beamforming
-        ventana = np.hanning(len(audio_data))
-        audio_ventaneado = audio_data * ventana[:, np.newaxis]
+    def apply_beamforming_optimized(self, audio_data, angle_deg, confidence):
+        """Beamforming OPTIMIZADO para DOA estable"""
+        # ✅ USAR SOLO DELAYS ENTEROS (más estable)
+        angle_deg_int = int(angle_deg) % 360
+        delays = self.delays_precalculated[angle_deg_int]
         
-        delays = self.calculate_delays(angle_deg)
-        delay_samples = np.round(delays * self.sample_rate).astype(int)
-        max_delay = np.max(delay_samples)
+        max_delay = int(np.max(delays[:, 0]))
+        output_length = len(audio_data) + max_delay
         
-        output_length = len(audio_ventaneado) + max_delay
-        aligned_signals = np.zeros((output_length, 4))
+        beamformed = np.zeros(output_length)
+        weights = np.zeros(output_length)
         
         for mic in range(4):
-            start_idx = delay_samples[mic]
-            end_idx = start_idx + len(audio_ventaneado)
+            delay_int = int(delays[mic, 0])
+            
+            start_idx = delay_int
+            end_idx = start_idx + len(audio_data)
+            
             if end_idx <= output_length:
-                aligned_signals[start_idx:end_idx, mic] = audio_ventaneado[:, mic]
+                beamformed[start_idx:end_idx] += audio_data[:, mic]
+                weights[start_idx:end_idx] += 1.0
         
-        beamformed_signal = np.sum(aligned_signals, axis=1) / 4.0
-        señal_sin_filtrar = beamformed_signal[:len(audio_ventaneado)]
+        weights[weights == 0] = 1.0
+        beamformed = beamformed / weights
+        beamformed = beamformed[:len(audio_data)]
         
-        # FILTRADO IIR para mejorar calidad vocal
-        señal_filtrada = self._aplicar_filtro_iir(señal_sin_filtrar, usar_filtfilt=True)
+        # ✅ GANANCIA ADAPTATIVA SEGÚN CONFIANZA DOA
+        adaptive_gain = 1.0
         
-        return señal_filtrada
+        if confidence > 0.7:
+            # Alta confianza - ganancia normal
+            adaptive_gain = 1.0
+            self.consecutive_stable_frames += 1
+        elif confidence > 0.4:
+            # Confianza media - ganancia reducida
+            adaptive_gain = 0.8
+            self.consecutive_stable_frames = max(0, self.consecutive_stable_frames - 1)
+        else:
+            # Baja confianza - ganancia muy reducida
+            adaptive_gain = 0.6
+            self.consecutive_stable_frames = 0
+        
+        # ✅ BONUS POR ESTABILIDAD PROLONGADA
+        if self.consecutive_stable_frames > 20:
+            adaptive_gain *= 1.1  # Pequeño bonus por estabilidad
+        
+        beamformed = beamformed * adaptive_gain
+        
+        # ✅ NORMALIZACIÓN CONSERVADORA
+        max_val = np.max(np.abs(beamformed))
+        if max_val > 0.25:
+            beamformed = beamformed * (0.25 / max_val)
+        
+        return beamformed
+
+    def aplicar_compresor_optimizado(self, señal, umbral=0.18, ratio=2.2):
+        """Compresor OPTIMIZADO para señales estables"""
+        señal_comprimida = np.zeros_like(señal)
+        
+        # ✅ VENTANA MÁS LARGA PARA MÁS SUAVIDAD
+        window_size = 100
+        envelope = np.convolve(np.abs(señal), np.ones(window_size)/window_size, mode='same')
+        
+        for i in range(len(señal)):
+            nivel = envelope[i]
+            
+            if nivel > umbral:
+                exceso_db = 20 * np.log10(nivel / umbral)
+                reduccion_db = exceso_db * (1 - 1/ratio)
+                ganancia_objetivo = 10 ** (-reduccion_db / 20)
+            else:
+                ganancia_objetivo = 1.0
+            
+            # ✅ SUAVIDAD EXTREMA EN CAMBIOS
+            self.compression_state = 0.99 * self.compression_state + 0.01 * ganancia_objetivo
+            señal_comprimida[i] = señal[i] * self.compression_state
+        
+        return señal_comprimida
+
+    def suavizar_transicion_minima(self, señal, muestras_suavizado=32):
+        """Suavizado MÍNIMO - DOA ya es estable"""
+        if len(señal) < muestras_suavizado * 2:
+            return señal
+            
+        señal_suavizada = señal.copy()
+        
+        # ✅ SOLO SUAVIDAD EN BORDES (menos procesamiento)
+        ventana_final = 0.5 - 0.5 * np.cos(np.linspace(np.pi, 0, muestras_suavizado))
+        señal_suavizada[-muestras_suavizado:] *= ventana_final
+        
+        return señal_suavizada
 
     def recibir_audio(self, audio_data):
-        """Callback que recibe audio del gestor central."""
-        if self.is_active and audio_data is not None and self.is_processing:
-            try:
-                if audio_data.shape[1] >= 6:
-                    # Usar CANAL 0 para comparación
-                    canal0_signal = audio_data[:, 0].copy()
-                    
-                    # Actualizar buffer del CANAL 0
-                    self.canal0_buffer = np.roll(self.canal0_buffer, -len(canal0_signal))
-                    self.canal0_buffer[-len(canal0_signal):] = canal0_signal
-                    
-                    # Obtener ángulo actual del DOA
-                    self.current_angle = self.doa.angulo_actual
-                    
-                    # Usar canales 1-4 para beamforming
-                    mic_data = audio_data[:, 1:5].copy()
-                    
-                    # Aplicar beamforming CON FILTRO IIR
-                    beamformed = self.apply_beamforming(mic_data, self.current_angle)
-                    
-                    # *** AMPLIFICACIÓN 30x PARA MEJOR VISUALIZACIÓN ***
-                    factor_amplificacion = 30.0
-                    beamformed_amplificado = beamformed * factor_amplificacion
-                    
-                    # Actualizar buffer beamformed CON AMPLIFICACIÓN 30x
-                    self.beamformed_buffer = np.roll(self.beamformed_buffer, -len(beamformed_amplificado))
-                    self.beamformed_buffer[-len(beamformed_amplificado):] = beamformed_amplificado
-                    
-                    # DEBUG: Verificar niveles ocasionalmente
-                    if np.random.random() < 0.05:
-                        rms_canal0 = np.sqrt(np.mean(canal0_signal**2))
-                        rms_beam = np.sqrt(np.mean(beamformed**2))
-                        rms_beam_amp = np.sqrt(np.mean(beamformed_amplificado**2))
-                        print(f"Amplificación 30x - Canal0: {rms_canal0:.4f}, Beam: {rms_beam:.4f}, Beam(x30): {rms_beam_amp:.4f}")
-                    
-                    # Guardar en buffer completo SIN amplificación
-                    self.full_beamformed_audio.append(beamformed.copy())
+        """Callback OPTIMIZADO para DOA estable"""
+        if not self.is_active or audio_data is None or not self.is_processing:
+            return
+            
+        try:
+            if audio_data.shape[1] >= 6:
+                canal0_signal = audio_data[:, 0].copy()
+                
+                self.canal0_buffer = np.roll(self.canal0_buffer, -len(canal0_signal))
+                self.canal0_buffer[-len(canal0_signal):] = canal0_signal
+                
+                # ✅ DOA YA VIENE ESTABLE - SOLO USAR ÁNGULO
+                self.current_angle, self.angle_confidence = self.doa.get_angulo_actual()
+                
+                mic_data = audio_data[:, 1:5].copy()
+                
+                # ✅ BEAMFORMING CON CONFIANZA INTEGRADA
+                beamformed = self.apply_beamforming_optimized(
+                    mic_data, self.current_angle, self.angle_confidence
+                )
+                
+                # ✅ CADENA DE PROCESAMIENTO SIMPLIFICADA
+                beamformed_ganancia = beamformed * self.ganancia_base
+                beamformed_comprimido = self.aplicar_compresor_optimizado(beamformed_ganancia)
+                beamformed_filtrado = self.aplicar_filtro_pasabanda(beamformed_comprimido)
+                beamformed_final = self.suavizar_transicion_minima(beamformed_filtrado, 32)
+                
+                # Limpieza de datos
+                beamformed_final = np.nan_to_num(beamformed_final, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                # ✅ GUARDAR AUDIO
+                self.full_beamformed_audio.append(beamformed_final.copy())
+                self.buffer_count += 1
+                
+                # Para visualización
+                beamformed_visual = beamformed * self.ganancia_visual
+                beamformed_visual = np.clip(beamformed_visual, -1.0, 1.0)
+                
+                beamformed_filtrado_visual = beamformed_filtrado * self.ganancia_visual
+                beamformed_filtrado_visual = np.clip(beamformed_filtrado_visual, -1.0, 1.0)
+                
+                # Actualizar buffers de visualización
+                self.beamformed_buffer = np.roll(self.beamformed_buffer, -len(beamformed_visual))
+                self.beamformed_buffer[-len(beamformed_visual):] = beamformed_visual
+                
+                self.beamformed_filtrado_buffer = np.roll(
+                    self.beamformed_filtrado_buffer, -len(beamformed_filtrado_visual)
+                )
+                self.beamformed_filtrado_buffer[-len(beamformed_filtrado_visual):] = beamformed_filtrado_visual
+                
+                # ✅ MONITOREO MEJORADO
+                if self.buffer_count % 40 == 0:
+                    rms_beam = np.sqrt(np.mean(beamformed_final**2))
+                    stability = "⚡" if self.consecutive_stable_frames > 20 else ""
+                    print(f"🎯 Beam - Ángulo: {self.current_angle}° "
+                          f"Conf: {self.angle_confidence:.2f} "
+                          f"RMS: {rms_beam:.3f} {stability}")
                         
-            except Exception as e:
-                print(f"Error en beamforming: {e}")
+        except Exception as e:
+            print(f"❌ Error en beamforming: {e}")
 
-    def compute_spectrogram(self, data, nperseg=512):
-        """Calcula el espectrograma de una señal."""
-        f, t, Sxx = signal.spectrogram(data, self.sample_rate, nperseg=nperseg, noverlap=nperseg//2)
-        return f, t, 10 * np.log10(Sxx + 1e-10)
-
-    def compute_spectrum(self, data):
-        """Calcula el espectro de frecuencia de una señal."""
-        fft_data = np.fft.fft(data)
-        freqs = np.fft.fftfreq(len(data), 1/self.sample_rate)
-        magnitude = np.abs(fft_data)
-        # Tomar solo frecuencias positivas
-        positive_freqs = freqs[:len(freqs)//2]
-        positive_magnitude = magnitude[:len(magnitude)//2]
-        return positive_freqs, positive_magnitude
-
-    def guardar_audio_beamformed(self):
-        """Guarda el audio beamformed completo en archivo WAV."""
+    def guardar_audio_beamformed(self, event=None):
+        """Guardado con información de estabilidad"""
         if len(self.full_beamformed_audio) == 0:
-            print("No hay datos de audio beamformed para guardar")
+            print("❌ No hay datos de audio para guardar")
             return
 
         try:
+            print("💾 Guardando audio beamformed...")
             audio_data = np.concatenate(self.full_beamformed_audio, axis=0)
+            
+            max_val = np.max(np.abs(audio_data))
+            print(f"📊 Máximo en grabación: {max_val:.4f}")
+            
+            if max_val > 0.8:
+                factor_ajuste = 0.8 / max_val
+                audio_data = audio_data * factor_ajuste
+                print(f"   🔧 Ajuste aplicado: {factor_ajuste:.3f}x")
+            
+            # Fade out suave
+            fade_samples = min(256, len(audio_data) // 20)
+            if len(audio_data) > fade_samples:
+                fade_out = 0.5 - 0.5 * np.cos(np.linspace(np.pi, 0, fade_samples))
+                audio_data[-fade_samples:] *= fade_out
+            
             audio_int16 = np.int16(audio_data * 32767)
             
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"beamformed_iir_{timestamp}.wav"
+            filename = f"beamformed_estable_{timestamp}.wav"
             filepath = os.path.join(self.output_folder, filename)
             
             wavfile.write(filepath, self.sample_rate, audio_int16)
             
             duracion = len(audio_data) / self.sample_rate
-            print(f"Audio beamformed CON FILTRO IIR guardado: {filepath}")
-            print(f"Duración: {duracion:.2f} segundos")
+            print(f"✅ AUDIO GUARDADO: {filepath}")
+            print(f"   Duración: {duracion:.2f}s")
+            print(f"   Ángulo final: {self.current_angle}°")
+            print(f"   Frames estables: {self.consecutive_stable_frames}")
             
             self.full_beamformed_audio = []
+            self.buffer_count = 0
             
         except Exception as e:
-            print(f"Error guardando audio beamformed: {e}")
+            print(f"❌ Error guardando audio: {e}")
 
     def configurar_visualizacion(self, fig):
-        """Configura las 4 gráficas en una sola ventana."""
+        """Configura la visualización 3x3"""
         try:
             self.fig = fig
             self.fig.clear()
             
-            # Crear layout 2x2
-            gs = gridspec.GridSpec(3, 2, figure=fig, height_ratios=[1, 1, 0.15])
+            gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.4)
             
-            # Título principal
-            self.fig.suptitle(
-                f'BEAMFORMING - CANAL 0 vs BEAMFORMED (AMPLIFICADO 30x)', 
-                fontsize=14, 
-                fontweight='bold'
-            )
+            self.fig.suptitle('BEAMFORMING - DOA ULTRA ESTABLE', 
+                            fontsize=12, fontweight='bold')
             
-            # 1. GRÁFICA TEMPORAL (Arriba-Izquierda)
-            self.ax_temporal = fig.add_subplot(gs[0, 0])
-            self.ax_temporal.set_title('DOMINIO TEMPORAL - Canal 0 vs Beamformed (Amplificado 30x)', 
-                                     fontweight='bold', fontsize=10)
-            self.ax_temporal.set_ylabel('Amplitud')
-            self.ax_temporal.set_xlabel('Tiempo (s)')
-            self.ax_temporal.grid(True, alpha=0.3)
-            self.ax_temporal.set_xlim(0, self.buffer_duration)
-            self.ax_temporal.set_ylim(-3.0, 3.0)  # Aumentado para 30x
+            self.axes = np.zeros((3, 3), dtype=object)
+            titulos_columnas = ['ORIGINAL', 'BEAMFORMED', 'BEAMFORMED + FILTRO']
+            titulos_filas = ['Espectrograma', 'Señal Temporal', 'Espectro Frecuencia']
             
-            # Crear líneas para temporal
+            for col in range(3):
+                for row in range(3):
+                    self.axes[row, col] = fig.add_subplot(gs[row, col])
+                    
+                    if row == 0:
+                        self.axes[row, col].set_title(titulos_columnas[col], fontweight='bold')
+                    
+                    if col == 0:
+                        self.axes[row, col].set_ylabel(titulos_filas[row], fontweight='bold')
+                    
+                    if row == 0:
+                        self.axes[row, col].set_xlabel('Tiempo (s)')
+                        self.axes[row, col].set_ylabel('Frecuencia (Hz)')
+                    elif row == 1:
+                        self.axes[row, col].set_xlabel('Tiempo (s)')
+                        self.axes[row, col].set_ylabel('Amplitud')
+                        self.axes[row, col].set_ylim(-1.0, 1.0)
+                        self.axes[row, col].grid(True, alpha=0.3)
+                    else:
+                        self.axes[row, col].set_xlabel('Frecuencia (Hz)')
+                        self.axes[row, col].set_ylabel('Magnitud (dB)')
+                        self.axes[row, col].set_xlim(0, 8000)
+                        self.axes[row, col].grid(True, alpha=0.3)
+            
             tiempo = np.linspace(0, self.buffer_duration, self.buffer_size)
-            self.canal0_time_line, = self.ax_temporal.plot(tiempo, self.canal0_buffer, 'b-', 
-                                                         linewidth=1.2, alpha=0.9, label='Canal 0 (Original)')
-            self.beam_time_line, = self.ax_temporal.plot(tiempo, self.beamformed_buffer, 'r-', 
-                                                       linewidth=1.2, alpha=0.9, label='Beamformed (Amplificado 30x)')
-            self.ax_temporal.legend(loc='upper right', fontsize=8)
+            colores = ['blue', 'green', 'red']
             
-            # 2. GRÁFICA ESPECTRAL (Arriba-Derecha)
-            self.ax_espectral = fig.add_subplot(gs[0, 1])
-            self.ax_espectral.set_title('DOMINIO FRECUENCIA - Canal 0 vs Beamformed (Amplificado 30x)', 
-                                      fontweight='bold', fontsize=10)
-            self.ax_espectral.set_ylabel('Amplitud (Normalizada)')
-            self.ax_espectral.set_xlabel('Frecuencia (Hz)')
-            self.ax_espectral.grid(True, alpha=0.3)
-            self.ax_espectral.set_xlim(0, 4000)
-            self.ax_espectral.set_ylim(0, 1.2)
+            for col in range(3):
+                self.lineas_temporales[col], = self.axes[1, col].plot(
+                    tiempo, np.zeros(self.buffer_size), 
+                    color=colores[col], linewidth=1.0
+                )
             
-            # Crear líneas para espectral
-            freqs = np.linspace(0, 4000, 1000)
-            self.canal0_freq_line, = self.ax_espectral.plot(freqs, np.zeros_like(freqs), 'b-', 
-                                                          linewidth=2.0, alpha=0.9, label='Canal 0 (Original)')
-            self.beam_freq_line, = self.ax_espectral.plot(freqs, np.zeros_like(freqs), 'r-', 
-                                                        linewidth=2.0, alpha=0.9, label='Beamformed (Amplificado 30x)')
-            self.ax_espectral.legend(loc='upper right', fontsize=8)
+            for col in range(3):
+                empty_spec = np.zeros((100, 100))
+                self.imagenes_espectrograma[col] = self.axes[0, col].imshow(
+                    empty_spec, aspect='auto', cmap='viridis',
+                    origin='lower', extent=[0, self.buffer_duration, 0, 8000]
+                )
+                if col == 2:
+                    plt.colorbar(self.imagenes_espectrograma[col], ax=self.axes[0, col])
             
-            # 3. ESPECTROGRAMA CANAL 0 (Abajo-Izquierda)
-            self.ax_canal0_spec = fig.add_subplot(gs[1, 0])
-            empty_spec = np.zeros((100, 100))
-            self.canal0_spec_image = self.ax_canal0_spec.imshow(
-                empty_spec, 
-                aspect='auto', 
-                cmap='viridis',
-                origin='lower', 
-                extent=[0, self.buffer_duration, 0, 4000]
-            )
-            self.ax_canal0_spec.set_title('ESPECTROGRAMA - Canal 0 Original', fontweight='bold', fontsize=10)
-            self.ax_canal0_spec.set_ylabel('Frecuencia (Hz)')
-            self.ax_canal0_spec.set_xlabel('Tiempo (s)')
-            self.ax_canal0_spec.grid(True, alpha=0.3)
-            plt.colorbar(self.canal0_spec_image, ax=self.ax_canal0_spec, label='dB')
+            frecuencias = np.fft.rfftfreq(self.buffer_size, 1/self.sample_rate)
+            for col in range(3):
+                self.lineas_espectro[col], = self.axes[2, col].plot(
+                    frecuencias, np.zeros_like(frecuencias) - 60,
+                    color=colores[col], linewidth=1.5
+                )
+                if col == 2:
+                    self.axes[2, col].axvline(50, color='red', linestyle='--', alpha=0.7, label='50Hz')
+                    self.axes[2, col].axvline(7000, color='red', linestyle='--', alpha=0.7, label='7000Hz')
+                    self.axes[2, col].legend(fontsize=8)
             
-            # 4. ESPECTROGRAMA BEAMFORMED (Abajo-Derecha)
-            self.ax_beam_spec = fig.add_subplot(gs[1, 1])
-            self.beam_spec_image = self.ax_beam_spec.imshow(
-                empty_spec, 
-                aspect='auto', 
-                cmap='viridis',
-                origin='lower', 
-                extent=[0, self.buffer_duration, 0, 4000]
-            )
-            self.ax_beam_spec.set_title('ESPECTROGRAMA - Señal Beamformed + Filtro IIR (Amplificado 30x)', 
-                                      fontweight='bold', fontsize=10)
-            self.ax_beam_spec.set_ylabel('Frecuencia (Hz)')
-            self.ax_beam_spec.set_xlabel('Tiempo (s)')
-            self.ax_beam_spec.grid(True, alpha=0.3)
-            plt.colorbar(self.beam_spec_image, ax=self.ax_beam_spec, label='dB')
-            
-            # 5. INFORMACIÓN (Fila inferior completa)
-            self.ax_info = fig.add_subplot(gs[2, :])
-            self.ax_info.axis('off')
-            self.angle_text = self.ax_info.text(
-                0.5, 0.5, 
-                f'COMPARACIÓN: Canal 0 vs Beamformed (AMPLIFICADO 30x) | Ángulo: {self.current_angle:.1f}° | Filtro IIR: 300-3400 Hz', 
-                transform=self.ax_info.transAxes, 
-                ha='center', va='center',
-                fontsize=12, fontweight='bold',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue")
-            )
-            
-            # Botón para guardar audio
-            self.btn_guardar_ax = plt.axes([0.8, 0.02, 0.15, 0.04])
-            self.btn_guardar = plt.Button(self.btn_guardar_ax, 'Guardar Audio', color='lightgreen')
-            self.btn_guardar.on_clicked(lambda x: self.guardar_audio_beamformed())
+            from matplotlib.widgets import Button
+            btn_ax = plt.axes([0.8, 0.01, 0.15, 0.04])
+            self.btn_guardar = Button(btn_ax, 'Guardar Audio', color='lightgreen')
+            self.btn_guardar.on_clicked(self.guardar_audio_beamformed)
             
             plt.tight_layout()
             return True
             
         except Exception as e:
-            print(f"Error configurando visualización: {e}")
+            print(f"❌ Error en visualización: {e}")
             return False
 
     def update_plot(self, frame):
-        """Actualiza las 4 gráficas en tiempo real."""
-        if not self.is_active or not self.is_processing:
-            return [self.canal0_time_line, self.beam_time_line, self.canal0_freq_line, self.beam_freq_line, 
-                   self.canal0_spec_image, self.beam_spec_image, self.angle_text]
+        """Actualiza la gráfica 3x3 en tiempo real"""
+        if not self.is_active:
+            return []
         
         try:
-            # Verificar que los buffers tienen datos
-            if len(self.canal0_buffer) == 0 or len(self.beamformed_buffer) == 0:
-                return [self.canal0_time_line, self.beam_time_line, self.canal0_freq_line, self.beam_freq_line, 
-                       self.canal0_spec_image, self.beam_spec_image, self.angle_text]
+            buffers = [
+                self.canal0_buffer,
+                self.beamformed_buffer,
+                self.beamformed_filtrado_buffer
+            ]
             
-            # Crear array de tiempo
-            tiempo = np.linspace(0, self.buffer_duration, len(self.canal0_buffer))
+            tiempo = np.linspace(0, self.buffer_duration, self.buffer_size)
             
-            # Actualizar líneas temporales
-            self.canal0_time_line.set_data(tiempo, self.canal0_buffer)
-            self.beam_time_line.set_data(tiempo, self.beamformed_buffer)
-            
-            # Actualizar gráfica espectral
-            if np.max(np.abs(self.canal0_buffer)) > 0.001:
-                freqs_canal0, spectrum_canal0 = self.compute_spectrum(self.canal0_buffer)
-                freqs_beam, spectrum_beam = self.compute_spectrum(self.beamformed_buffer)
+            for col in range(3):
+                buffer_actual = buffers[col]
                 
-                # Normalizar para visualización
-                max_spectrum = max(np.max(spectrum_canal0), np.max(spectrum_beam))
-                if max_spectrum > 0:
-                    spectrum_canal0_norm = spectrum_canal0 / max_spectrum
-                    spectrum_beam_norm = spectrum_beam / max_spectrum
-                else:
-                    spectrum_canal0_norm = spectrum_canal0
-                    spectrum_beam_norm = spectrum_beam
+                self.lineas_temporales[col].set_data(tiempo, buffer_actual)
                 
-                self.canal0_freq_line.set_data(freqs_canal0, spectrum_canal0_norm)
-                self.beam_freq_line.set_data(freqs_beam, spectrum_beam_norm)
-            
-            # Actualizar espectrogramas
-            if len(self.canal0_buffer) >= 512:
-                # Espectrograma CANAL 0
-                f_canal0, t_canal0, Sxx_canal0 = self.compute_spectrogram(self.canal0_buffer)
-                self.canal0_spec_image.set_data(Sxx_canal0)
-                self.canal0_spec_image.set_extent([0, self.buffer_duration, f_canal0[0], f_canal0[-1]])
-                vmin_canal0, vmax_canal0 = np.percentile(Sxx_canal0, [5, 95])
-                self.canal0_spec_image.set_clim(vmin_canal0, vmax_canal0)
+                if len(buffer_actual) >= 256:
+                    f, t, Sxx = signal.spectrogram(buffer_actual, self.sample_rate, 
+                                                  nperseg=256, noverlap=128)
+                    if Sxx.size > 0:
+                        self.imagenes_espectrograma[col].set_data(Sxx)
+                        self.imagenes_espectrograma[col].set_extent([0, self.buffer_duration, f[0], f[-1]])
+                        self.imagenes_espectrograma[col].set_clim(
+                            vmin=np.percentile(Sxx, 10), 
+                            vmax=np.percentile(Sxx, 90)
+                        )
                 
-                # Espectrograma beamformed
-                f_beam, t_beam, Sxx_beam = self.compute_spectrogram(self.beamformed_buffer)
-                self.beam_spec_image.set_data(Sxx_beam)
-                self.beam_spec_image.set_extent([0, self.buffer_duration, f_beam[0], f_beam[-1]])
-                vmin_beam, vmax_beam = np.percentile(Sxx_beam, [5, 95])
-                self.beam_spec_image.set_clim(vmin_beam, vmax_beam)
+                fft_signal = np.fft.rfft(buffer_actual * np.hanning(len(buffer_actual)))
+                fft_magnitude = 20 * np.log10(np.abs(fft_signal) + 1e-8)
+                frecuencias = np.fft.rfftfreq(len(buffer_actual), 1/self.sample_rate)
+                
+                self.lineas_espectro[col].set_data(frecuencias, fft_magnitude)
+                self.axes[2, col].set_ylim(
+                    np.min(fft_magnitude) - 5, 
+                    np.max(fft_magnitude) + 5
+                )
             
-            # Actualizar texto del ángulo
-            self.angle_text.set_text(f'COMPARACIÓN: Canal 0 vs Beamformed (AMPLIFICADO 30x) | Ángulo: {self.current_angle:.1f}° | Filtro IIR: 300-3400 Hz')
-            
+            todos_elementos = (
+                list(self.lineas_temporales) + 
+                list(self.imagenes_espectrograma) + 
+                list(self.lineas_espectro)
+            )
+            return todos_elementos
+                    
         except Exception as e:
-            print(f"Error actualizando gráficas: {e}")
-        
-        return [self.canal0_time_line, self.beam_time_line, self.canal0_freq_line, self.beam_freq_line, 
-               self.canal0_spec_image, self.beam_spec_image, self.angle_text]
+            print(f"❌ Error actualizando gráfica: {e}")
+            return []
 
     def iniciar_beamforming(self):
-        """Inicia el procesamiento de beamforming."""
+        """Inicia el beamforming"""
         if self.is_active:
-            print("Beamforming ya está activo")
             return
             
-        try:
-            self.is_active = True
-            self.is_processing = True
-            
-            print("BEAMFORMING ACTIVADO - SEÑAL BEAMFORMED AMPLIFICADA 30x")
-            print(f" - Canal 0: Señal original de referencia")
-            print(f" - Beamformed: Procesada con filtro IIR 300-3400 Hz")
-            print(f" - Amplificación visual: 30x en ambos dominios")
-            print(f" - Audio guardado: Sin amplificación (calidad original)")
-            print(f" - Ventana visualización: {self.buffer_duration} segundos")
-            
-        except Exception as e:
-            print(f"Error iniciando beamforming: {e}")
-            self.is_active = False
+        self.is_active = True
+        self.is_processing = True
+        self.buffer_count = 0
+        self.compression_state = 1.0
+        self.consecutive_stable_frames = 0
+        
+        print("✅ BEAMFORMING OPTIMIZADO ACTIVADO")
+        print("   - Adaptado a DOA ultra estable")
+        print("   - Ganancia adaptativa por confianza")
+        print("   - Procesamiento mínimo (máxima estabilidad)")
 
     def detener_beamforming(self):
-        """Detiene el procesamiento de beamforming."""
+        """Detiene el beamforming"""
         if len(self.full_beamformed_audio) > 0:
-            print("Guardando audio beamformed final...")
             self.guardar_audio_beamformed()
         
         self.is_processing = False
         self.is_active = False
-        self.filtro_zi = None
-            
-        print("Beamforming detenido")
+        self.buffer_count = 0
+        print("🛑 Beamforming detenido")
